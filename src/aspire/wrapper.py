@@ -14,7 +14,7 @@ class AspireModel(torch.nn.Module):
 
     @classmethod
     def from_pretrained(cls, repo_id: str, filename: str = "best_model.pt", config_name: str = "config.json", device: str = "cpu"):
-        """Load model + config from a local directory (if it exists) or the Hugging Face Hub."""
+        """Load model + config from a local directory if it exists or the Hugging Face hub."""
         if os.path.isdir(repo_id):
             # Check if local dir exists first
             cfg_path = os.path.join(repo_id, config_name)
@@ -42,7 +42,7 @@ class AspireModel(torch.nn.Module):
         return model
 
     def save_pretrained(self, save_dir: str = "./checkpoints"):
-        """Save model + config locally (for later upload to the Hub)."""
+        """Need testing"""
         os.makedirs(save_dir, exist_ok=True)
         torch.save(self.model.state_dict(), os.path.join(save_dir, "model.pt"))
         with open(os.path.join(save_dir, "config.json"), "w") as f:
@@ -50,12 +50,12 @@ class AspireModel(torch.nn.Module):
 
     @torch.no_grad()
     def predict(self, example: Example):
-        """Run prediction on one Example."""
+        """Run prediction on one Example"""
         self.model.eval()
         return self.model.predict(example)
     
     def predict_df(self, df, target: List[str] = [], batch_size: int = 32):
-        """Run prediction on a pandas DataFrame."""
+        """Run prediction on a pandas dataframe"""
         examples = df_to_examples(df, target)
         predictions = []
         step = max(1, batch_size)

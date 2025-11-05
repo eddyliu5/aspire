@@ -7,11 +7,6 @@ name = "aspire"
 version = "0.1"
 description = "ASPIRE — Arbitrary Set-based Permutation-Invariant Reasoning Engine"
 readme = "README.md"
-authors = [
-  { name = "Shreyas Bhat Brahmavar" },
-  { name = "Yang Li" },
-  { name = "Junier Oliva" },
-]
 license = {text = "CC BY-NC 4.0"}
 requires-python = ">=3.9"
 dependencies = [
@@ -26,6 +21,9 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/placeholder"
+Weights = "https://huggingface.co/placeholder"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# TODO: optional cli for inference/training
