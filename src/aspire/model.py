@@ -725,7 +725,7 @@ def load_single_dataset_batches(data_dir, max_datasets=15, multi_target=True, us
 # Training
 def train():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_dir', type=str, default='/playpen-nvme/scribble/shbhat/eddy_data/synthetic_data_1')
+    parser.add_argument('--data_dir', type=str, default='/datasets')
     parser.add_argument('--max_datasets', type=int, default=15)
     parser.add_argument('--num_epochs', type=int, default=40)
     parser.add_argument('--batch_size', type=int, default=4)

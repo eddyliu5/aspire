@@ -67,3 +67,23 @@ class AspireModel(torch.nn.Module):
             return preds
 
         raise TypeError("predict expects an Example or pandas.DataFrame")
+
+    def fit(
+        self,
+        data_dir: str = "/datasets",
+        max_datasets: int = 15,
+        num_epochs: int = 40,
+        batch_size: int = 4,
+        model_dim: int = 768,
+        num_heads: int = 8,
+        num_inds: int = 32,
+        lr: float = 1e-4,
+        mask_prob: float = 0.15,
+        max_targets: int = 1,
+        multi_target: bool = False,
+        use_support: bool = False,
+        num_support: int = 5,
+        save_dir: str = "./checkpoints",
+    ):
+        # TODO: link up with model train()
+        return

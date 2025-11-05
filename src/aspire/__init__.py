@@ -1,2 +1,2 @@
-from .wrapper import AspireModel
+from .aspire import AspireModel
 __all__ = ["AspireModel"]
