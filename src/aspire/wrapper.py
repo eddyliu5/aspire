@@ -3,6 +3,7 @@ from typing import List, Optional
 from huggingface_hub import hf_hub_download
 from .model import ASPIREEnhanced, Feature, Example
 from .data_loader import df_to_examples
+import pandas as pd
 
 class AspireModel(torch.nn.Module):
     """User-facing wrapper for model."""
@@ -47,20 +48,22 @@ class AspireModel(torch.nn.Module):
         torch.save(self.model.state_dict(), os.path.join(save_dir, "model.pt"))
         with open(os.path.join(save_dir, "config.json"), "w") as f:
             json.dump(self.config, f, indent=2)
-
-    @torch.no_grad()
-    def predict(self, example: Example):
-        """Run prediction on one Example"""
-        self.model.eval()
-        return self.model.predict(example)
     
-    def predict_df(self, df, target: List[str] = [], batch_size: int = 32):
-        """Run prediction on a pandas dataframe"""
-        examples = df_to_examples(df, target)
-        predictions = []
-        step = max(1, batch_size)
-        for idx in range(0, len(examples), step):
-            batch = examples[idx:idx + step]
-            for example in batch:
-                predictions.append(self.predict(example))
-        return predictions
+    @torch.no_grad()
+    def predict(self, data, target: List[str] = [], batch_size: int = 32):
+        """Run prediction on an Example or a pandas DataFrame."""
+        self.model.eval()
+
+        if isinstance(data, Example):
+            return self.model.predict(data)
+
+        if isinstance(data, pd.DataFrame):
+            examples = df_to_examples(data, target)
+            preds = []
+            step = max(1, batch_size)
+            for idx in range(0, len(examples), step):
+                for example in examples[idx:idx + step]:
+                    preds.append(self.model.predict(example))
+            return preds
+
+        raise TypeError("predict expects an Example or pandas.DataFrame")
