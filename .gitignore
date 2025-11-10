@@ -1,6 +1,9 @@
 /checkpoints
-/datasets
+/datasets/metadata_heart-c.json
 /build
+
 *__pycache__/
 *egg-info/
+*.DS_Store
+
 test.py

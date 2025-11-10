@@ -1,0 +1,145 @@
+{
+    "feature_desc": [
+        {
+            "name": "pet_age",
+            "description": "Age of the pet in years at the time of assessment",
+            "dtype": "continuous",
+            "choices": null,
+            "value_range": [
+                0.1,
+                25.0
+            ]
+        },
+        {
+            "name": "species",
+            "description": "Biological species of the pet",
+            "dtype": "categorical",
+            "choices": [
+                "Dog",
+                "Cat",
+                "Bird",
+                "Reptile",
+                "Fish",
+                "Small Mammal"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "weight_kg",
+            "description": "Current weight of the pet measured in kilograms",
+            "dtype": "continuous",
+            "choices": null,
+            "value_range": [
+                0.1,
+                50.0
+            ]
+        },
+        {
+            "name": "vaccination_status",
+            "description": "Indicates current vaccination completeness",
+            "dtype": "categorical",
+            "choices": [
+                "Up-to-date",
+                "Overdue",
+                "Incomplete",
+                "Not applicable"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "last_vet_visit_days_ago",
+            "description": "Number of days since the last veterinary visit",
+            "dtype": "continuous",
+            "choices": null,
+            "value_range": [
+                0.0,
+                365.0
+            ]
+        },
+        {
+            "name": "activity_level",
+            "description": "Quantified activity level based on tracking device data",
+            "dtype": "categorical",
+            "choices": [
+                "Low",
+                "Moderate",
+                "High",
+                "Very high"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "dietary_plan",
+            "description": "Type of diet currently followed",
+            "dtype": "categorical",
+            "choices": [
+                "Standard",
+                "Specialized",
+                "Prescription",
+                "Raw",
+                "Home-cooked"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "behavior_score",
+            "description": "Composite score from 0-100 assessing behavioral health",
+            "dtype": "continuous",
+            "choices": null,
+            "value_range": [
+                0.0,
+                100.0
+            ]
+        },
+        {
+            "name": "parasite_prevention",
+            "description": "Current parasite prevention method usage status",
+            "dtype": "categorical",
+            "choices": [
+                "Monthly treatment",
+                "Seasonal use",
+                "None",
+                "Natural methods"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "owner_compliance_score",
+            "description": "Assessment of owner's adherence to care recommendations (0-10 scale)",
+            "dtype": "continuous",
+            "choices": null,
+            "value_range": [
+                0.0,
+                10.0
+            ]
+        },
+        {
+            "name": "allergy_status",
+            "description": "Presence and type of allergies",
+            "dtype": "categorical",
+            "choices": [
+                "Food allergy",
+                "Environmental allergy",
+                "No allergies",
+                "Unknown"
+            ],
+            "value_range": null
+        },
+        {
+            "name": "health_risk_category",
+            "description": "Assigned risk category based on overall health assessment",
+            "dtype": "categorical",
+            "choices": [
+                "Low risk",
+                "Medium risk",
+                "High risk",
+                "Critical risk"
+            ],
+            "value_range": null
+        }
+    ],
+    "target": [
+        "health_risk_category"
+    ],
+    "dataset_desc": "A dataset designed to evaluate and enhance the wellness of pets through various health and behavioral metrics."
+}

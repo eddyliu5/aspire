@@ -1,0 +1,211 @@
+{
+  "topic": "pet_wellness_programs",
+  "description": "A dataset designed to evaluate and enhance the wellness of pets through various health and behavioral metrics.",
+  "n_samples": 2000,
+  "n_features": 12,
+  "features": [
+    {
+      "name": "pet_age",
+      "type": "continuous",
+      "description": "Age of the pet in years at the time of assessment",
+      "categories": null,
+      "range": [
+        0.1,
+        25.0
+      ]
+    },
+    {
+      "name": "species",
+      "type": "discrete",
+      "description": "Biological species of the pet",
+      "categories": [
+        "Dog",
+        "Cat",
+        "Bird",
+        "Reptile",
+        "Fish",
+        "Small Mammal"
+      ],
+      "range": null
+    },
+    {
+      "name": "weight_kg",
+      "type": "continuous",
+      "description": "Current weight of the pet measured in kilograms",
+      "categories": null,
+      "range": [
+        0.1,
+        50.0
+      ]
+    },
+    {
+      "name": "vaccination_status",
+      "type": "discrete",
+      "description": "Indicates current vaccination completeness",
+      "categories": [
+        "Up-to-date",
+        "Overdue",
+        "Incomplete",
+        "Not applicable"
+      ],
+      "range": null
+    },
+    {
+      "name": "last_vet_visit_days_ago",
+      "type": "continuous",
+      "description": "Number of days since the last veterinary visit",
+      "categories": null,
+      "range": [
+        0.0,
+        365.0
+      ]
+    },
+    {
+      "name": "activity_level",
+      "type": "discrete",
+      "description": "Quantified activity level based on tracking device data",
+      "categories": [
+        "Low",
+        "Moderate",
+        "High",
+        "Very high"
+      ],
+      "range": null
+    },
+    {
+      "name": "dietary_plan",
+      "type": "discrete",
+      "description": "Type of diet currently followed",
+      "categories": [
+        "Standard",
+        "Specialized",
+        "Prescription",
+        "Raw",
+        "Home-cooked"
+      ],
+      "range": null
+    },
+    {
+      "name": "behavior_score",
+      "type": "continuous",
+      "description": "Composite score from 0-100 assessing behavioral health",
+      "categories": null,
+      "range": [
+        0.0,
+        100.0
+      ]
+    },
+    {
+      "name": "parasite_prevention",
+      "type": "discrete",
+      "description": "Current parasite prevention method usage status",
+      "categories": [
+        "Monthly treatment",
+        "Seasonal use",
+        "None",
+        "Natural methods"
+      ],
+      "range": null
+    },
+    {
+      "name": "owner_compliance_score",
+      "type": "continuous",
+      "description": "Assessment of owner's adherence to care recommendations (0-10 scale)",
+      "categories": null,
+      "range": [
+        0.0,
+        10.0
+      ]
+    },
+    {
+      "name": "allergy_status",
+      "type": "discrete",
+      "description": "Presence and type of allergies",
+      "categories": [
+        "Food allergy",
+        "Environmental allergy",
+        "No allergies",
+        "Unknown"
+      ],
+      "range": null
+    },
+    {
+      "name": "health_risk_category",
+      "type": "discrete",
+      "description": "Assigned risk category based on overall health assessment",
+      "categories": [
+        "Low risk",
+        "Medium risk",
+        "High risk",
+        "Critical risk"
+      ],
+      "range": null
+    }
+  ],
+  "bn_structure": {
+    "nodes": [
+      "pet_age",
+      "species",
+      "weight_kg",
+      "vaccination_status",
+      "last_vet_visit_days_ago",
+      "activity_level",
+      "dietary_plan",
+      "behavior_score",
+      "parasite_prevention",
+      "owner_compliance_score",
+      "allergy_status",
+      "health_risk_category"
+    ],
+    "edges": [
+      [
+        "species",
+        "pet_age"
+      ],
+      [
+        "species",
+        "weight_kg"
+      ],
+      [
+        "species",
+        "vaccination_status"
+      ],
+      [
+        "vaccination_status",
+        "health_risk_category"
+      ],
+      [
+        "last_vet_visit_days_ago",
+        "health_risk_category"
+      ],
+      [
+        "activity_level",
+        "behavior_score"
+      ],
+      [
+        "dietary_plan",
+        "behavior_score"
+      ],
+      [
+        "dietary_plan",
+        "weight_kg"
+      ],
+      [
+        "parasite_prevention",
+        "health_risk_category"
+      ],
+      [
+        "owner_compliance_score",
+        "vaccination_status"
+      ],
+      [
+        "owner_compliance_score",
+        "parasite_prevention"
+      ],
+      [
+        "allergy_status",
+        "health_risk_category"
+      ]
+    ]
+  }
+}

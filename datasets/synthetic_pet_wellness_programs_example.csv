@@ -1,0 +1,10 @@
+species,last_vet_visit_days_ago,activity_level,dietary_plan,owner_compliance_score,allergy_status,pet_age,behavior_score,weight_kg,vaccination_status,parasite_prevention,health_risk_category
+Bird,304.296133,Very high,Standard,9.899471,Food allergy,13.718619,70.697305,29.083706,Incomplete,Seasonal use,Medium risk
+Bird,10.151210,Low,Raw,4.908987,Food allergy,13.296550,44.331998,21.056128,Overdue,Seasonal use,Medium risk
+Bird,361.429217,Low,Standard,0.045560,Food allergy,14.899863,36.419449,44.088704,Up-to-date,Seasonal use,High risk
+Cat,348.092933,Low,Prescription,9.240157,Food allergy,11.479405,3.604434,38.719887,Not applicable,Natural methods,Medium risk
+Cat,291.344475,Very high,Prescription,7.474235,Unknown,20.177259,11.731940,25.751147,Not applicable,Monthly treatment,Low risk
+Cat,161.762454,Moderate,Standard,5.776979,Food allergy,20.081008,0.443374,37.131188,Up-to-date,Monthly treatment,Medium risk
+Small Mammal,71.219752,Moderate,Prescription,5.138989,Food allergy,20.990376,29.016744,47.544867,Incomplete,Monthly treatment,Low risk
+Small Mammal,297.974643,Moderate,Raw,5.548504,Environmental allergy,22.933092,66.496462,42.030979,Incomplete,Seasonal use,High risk
+Small Mammal,89.064103,Moderate,Specialized,8.064125,Food allergy,3.698604,53.831659,34.712828,Overdue,Natural methods,Medium risk
