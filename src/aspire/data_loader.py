@@ -24,11 +24,11 @@ def _infer_features(df):
         if numeric_series is not None and not numeric_series.empty:
             dtype = "continuous"
             value_range = (float(numeric_series.min()), float(numeric_series.max()))
-            feature = Feature(name=column,description="",dtype=dtype,value_range=value_range)
+            feature = Feature(name=column,description=column,dtype=dtype,value_range=value_range)
         else:
             dtype = "categorical"
             choices = list(dict.fromkeys(str(v) for v in non_na)) if not non_na.empty else []
-            feature = Feature(name=column,description="",dtype=dtype,choices=choices)
+            feature = Feature(name=column,description=column,dtype=dtype,choices=choices)
         features.append(feature)
     return features
 

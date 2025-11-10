@@ -1,5 +1,4 @@
 /checkpoints
-/datasets/metadata_heart-c.json
 /build
 
 *__pycache__/
@@ -7,3 +6,4 @@
 *.DS_Store
 
 test.py
+*metadata_heart-c.json
