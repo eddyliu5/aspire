@@ -1,4 +1,4 @@
-import os, json, torch
+import os, json, sys, torch
 from typing import List, Optional
 from huggingface_hub import hf_hub_download
 from .model import ASPIREEnhanced, Feature, Example
@@ -85,5 +85,5 @@ class AspireModel(torch.nn.Module):
         num_support: int = 5,
         save_dir: str = "./checkpoints",
     ):
-        # TODO: link up with model train()
+        # TODO: Implement default: train from scratch, with optional from_pretained/from_checkpoint, which works as finetune
         return
