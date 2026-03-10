@@ -1,4 +1,4 @@
-import os, json, sys, torch
+import os, json, logging, torch
 from typing import Any, List, Mapping, Optional, Sequence
 from huggingface_hub import hf_hub_download
 from sklearn.exceptions import NotFittedError
@@ -13,6 +13,8 @@ from .data_loader import (
     validate_feature_specs,
 )
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 class AspireModel(torch.nn.Module):
     """User-facing wrapper for model."""
@@ -96,7 +98,13 @@ class AspireModel(torch.nn.Module):
         if isinstance(state_dict, dict) and "model_state_dict" in state_dict:
             state_dict = state_dict["model_state_dict"]
 
-        model.model.load_state_dict(state_dict, strict=False)
+        incompatible = model.model.load_state_dict(state_dict, strict=False)
+        missing = getattr(incompatible, "missing_keys", [])
+        unexpected = getattr(incompatible, "unexpected_keys", [])
+        if missing:
+            logger.warning("Missing keys when loading checkpoint: %d", len(missing))
+        if unexpected:
+            logger.warning("Unexpected keys when loading checkpoint: %d", len(unexpected))
         model._has_loaded_weights = True
         model.eval()
         return model
@@ -174,6 +182,10 @@ class AspireModel(torch.nn.Module):
         Otherwise fit trains from scratch from the current randomly initialized weights.
         If `feature_specs` were provided at initialization, fit uses those as the default
         metadata schema (including dtype/range/choices).
+
+        Finetuning mode uses safer defaults inspired by the original pipeline:
+        lower backbone LR, optional BERT freezing, support examples, and
+        validation-based early stopping.
         """
         if self.metadata is None and not self.feature_specs_:
             raise ValueError(
@@ -212,6 +224,27 @@ class AspireModel(torch.nn.Module):
 
         self.fit_mode_ = "finetune" if self._has_loaded_weights else "scratch"
 
+        if self.fit_mode_ == "finetune":
+            # Keep user override behavior simple: if learning_rate stays at the
+            # wrapper default, switch to safer finetuning rates.
+            if learning_rate == 1e-3:
+                resolved_lr_head = 1e-4
+                resolved_lr_backbone = 1e-5
+            else:
+                resolved_lr_head = learning_rate
+                resolved_lr_backbone = learning_rate
+            freeze_bert = True
+            num_support = 5
+            val_fraction = 0.2
+            patience = 5
+        else:
+            resolved_lr_head = learning_rate
+            resolved_lr_backbone = learning_rate
+            freeze_bert = False
+            num_support = 0
+            val_fraction = 0.0
+            patience = 0
+
         train_examples(
             model=self.model,
             examples=examples,
@@ -219,6 +252,12 @@ class AspireModel(torch.nn.Module):
             batch_size=batch_size,
             learning_rate=learning_rate,
             random_state=random_state,
+            lr_head=resolved_lr_head,
+            lr_backbone=resolved_lr_backbone,
+            freeze_bert=freeze_bert,
+            num_support=num_support,
+            val_fraction=val_fraction,
+            patience=patience,
         )
 
         if self.feature_specs_ and self.target_indices_:

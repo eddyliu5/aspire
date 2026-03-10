@@ -11,7 +11,8 @@ import logging
 import argparse
 import os
 import json
-from typing import Any, List, Optional
+from copy import deepcopy
+from typing import Any, List, Optional, Sequence, Tuple
 from dataclasses import dataclass
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error
 
@@ -52,20 +53,58 @@ def train_examples(
     batch_size: int = 8,
     learning_rate: float = 1e-3,
     random_state: Optional[int] = None,
+    lr_head: Optional[float] = None,
+    lr_backbone: Optional[float] = None,
+    freeze_bert: bool = False,
+    num_support: int = 0,
+    val_fraction: float = 0.0,
+    patience: int = 0,
+    weight_decay: float = 0.01,
 ) -> nn.Module:
-    """Minimal training loop for a list of ASPIRE examples."""
+    """
+    Train model on a list of ASPIRE examples.
+
+    Supports both:
+    - vanilla training (single learning rate)
+    - finetuning-style training with split LRs, optional BERT freezing,
+      support examples, validation split, and early stopping.
+    """
     if not examples:
         raise ValueError("No training examples were provided.")
 
     if random_state is not None:
         set_seeds(random_state)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    model.train()
+    train_examples_, val_examples_ = _split_examples(
+        examples=examples,
+        val_fraction=val_fraction,
+        random_state=random_state,
+    )
+
+    if num_support > 0:
+        _attach_support_examples(train_examples_, train_examples_, num_support=num_support)
+        if val_examples_:
+            _attach_support_examples(val_examples_, train_examples_, num_support=num_support)
+
+    optimizer = _build_optimizer(
+        model=model,
+        learning_rate=learning_rate,
+        lr_head=lr_head,
+        lr_backbone=lr_backbone,
+        freeze_bert=freeze_bert,
+        weight_decay=weight_decay,
+    )
+
+    best_state = None
+    best_metric = float("inf")
+    epochs_without_improvement = 0
 
     for _ in range(max(1, num_epochs)):
-        shuffled_examples = list(examples)
+        model.train()
+        shuffled_examples = list(train_examples_)
         random.shuffle(shuffled_examples)
+        epoch_loss = 0.0
+        n_batches = 0
 
         for idx in range(0, len(shuffled_examples), max(1, batch_size)):
             batch = shuffled_examples[idx:idx + max(1, batch_size)]
@@ -78,9 +117,140 @@ def train_examples(
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            epoch_loss += loss.item()
+            n_batches += 1
+
+        train_metric = epoch_loss / max(1, n_batches)
+        eval_metric = train_metric
+
+        if val_examples_:
+            model.eval()
+            val_loss = 0.0
+            val_batches = 0
+            with torch.no_grad():
+                for idx in range(0, len(val_examples_), max(1, batch_size)):
+                    batch = val_examples_[idx:idx + max(1, batch_size)]
+                    loss = model(batch)
+                    if torch.isnan(loss):
+                        continue
+                    val_loss += loss.item()
+                    val_batches += 1
+            eval_metric = val_loss / max(1, val_batches)
+
+        if eval_metric < best_metric:
+            best_metric = eval_metric
+            best_state = deepcopy(model.state_dict())
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
+            if val_examples_ and patience > 0 and epochs_without_improvement >= patience:
+                break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     return model
+
+
+def _split_examples(
+    examples: List["Example"],
+    val_fraction: float = 0.0,
+    random_state: Optional[int] = None,
+) -> Tuple[List["Example"], List["Example"]]:
+    """Split examples into train/validation lists."""
+    if val_fraction <= 0:
+        return list(examples), []
+    if val_fraction >= 1:
+        raise ValueError("val_fraction must be in [0, 1).")
+
+    shuffled = list(examples)
+    if random_state is not None:
+        rng = random.Random(random_state)
+        rng.shuffle(shuffled)
+    else:
+        random.shuffle(shuffled)
+
+    n_total = len(shuffled)
+    n_val = int(n_total * val_fraction)
+    if n_total >= 5:
+        n_val = max(1, n_val)
+    else:
+        n_val = 0
+
+    if n_val <= 0:
+        return shuffled, []
+    if n_val >= n_total:
+        n_val = n_total - 1
+
+    return shuffled[n_val:], shuffled[:n_val]
+
+
+def _attach_support_examples(
+    query_examples: Sequence["Example"],
+    pool_examples: Sequence["Example"],
+    num_support: int = 5,
+) -> None:
+    """Attach randomly sampled support examples to each query example."""
+    if num_support <= 0 or not query_examples or not pool_examples:
+        return
+
+    for example in query_examples:
+        candidates = [candidate for candidate in pool_examples if candidate is not example]
+        if not candidates:
+            example.support_examples = []
+            continue
+
+        if len(candidates) < num_support:
+            repeats = (num_support // len(candidates)) + 1
+            candidates = list(candidates) * repeats
+
+        support = random.sample(candidates, k=min(num_support, len(candidates)))
+        example.support_examples = [
+            Example(
+                features=s.features,
+                values=s.values,
+                target_indices=[],
+                dataset_context=s.dataset_context,
+                support_examples=None,
+            )
+            for s in support
+        ]
+
+
+def _build_optimizer(
+    model: nn.Module,
+    learning_rate: float = 1e-3,
+    lr_head: Optional[float] = None,
+    lr_backbone: Optional[float] = None,
+    freeze_bert: bool = False,
+    weight_decay: float = 0.01,
+) -> torch.optim.Optimizer:
+    """Build optimizer with optional split learning rates for finetuning."""
+    resolved_lr_head = learning_rate if lr_head is None else lr_head
+    resolved_lr_backbone = learning_rate if lr_backbone is None else lr_backbone
+
+    for name, parameter in model.named_parameters():
+        if "semantic_grounding.bert" in name or "context_bert" in name:
+            parameter.requires_grad = not freeze_bert
+
+    head_params = []
+    backbone_params = []
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad:
+            continue
+        if name.startswith("prediction_heads."):
+            head_params.append(parameter)
+        else:
+            backbone_params.append(parameter)
+
+    param_groups = []
+    if backbone_params:
+        param_groups.append({"params": backbone_params, "lr": resolved_lr_backbone})
+    if head_params:
+        param_groups.append({"params": head_params, "lr": resolved_lr_head})
+
+    return torch.optim.AdamW(param_groups, weight_decay=weight_decay)
 
 # Set Transformer Components
 class MAB(nn.Module):
