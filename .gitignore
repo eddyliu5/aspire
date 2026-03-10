@@ -1,9 +1,13 @@
 /checkpoints
 /build
+/tests
+/example
+.pytest_cache/
 
-*__pycache__/
+*__pycache__
 *egg-info/
 *.DS_Store
 
 test.py
 *metadata_heart-c.json
+finetune_aspire.py

@@ -11,7 +11,7 @@ import logging
 import argparse
 import os
 import json
-from typing import List, Optional
+from typing import Any, List, Optional
 from dataclasses import dataclass
 from sklearn.metrics import accuracy_score, f1_score, mean_squared_error
 
@@ -43,6 +43,44 @@ class Example:
     target_indices: List[int]
     dataset_context: str
     support_examples: Optional[List] = None
+
+
+def train_examples(
+    model: nn.Module,
+    examples: List["Example"],
+    num_epochs: int = 10,
+    batch_size: int = 8,
+    learning_rate: float = 1e-3,
+    random_state: Optional[int] = None,
+) -> nn.Module:
+    """Minimal training loop for a list of ASPIRE examples."""
+    if not examples:
+        raise ValueError("No training examples were provided.")
+
+    if random_state is not None:
+        set_seeds(random_state)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    model.train()
+
+    for _ in range(max(1, num_epochs)):
+        shuffled_examples = list(examples)
+        random.shuffle(shuffled_examples)
+
+        for idx in range(0, len(shuffled_examples), max(1, batch_size)):
+            batch = shuffled_examples[idx:idx + max(1, batch_size)]
+            optimizer.zero_grad()
+            loss = model(batch)
+
+            if torch.isnan(loss):
+                continue
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+
+    model.eval()
+    return model
 
 # Set Transformer Components
 class MAB(nn.Module):
