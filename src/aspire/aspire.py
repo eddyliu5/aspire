@@ -84,6 +84,24 @@ class AspireModel(torch.nn.Module):
         with open(cfg_path, "r") as f:
             cfg = json.load(f)
 
+        checkpoint_payload = torch.load(weights_path, map_location=device)
+        if isinstance(checkpoint_payload, dict):
+            for key in (
+                "model_dim",
+                "num_heads",
+                "num_inds",
+                "mask_prob",
+                "max_targets",
+                "intra_layers",
+                "inter_layers",
+                "shared_bert",
+                "use_intra_set2set",
+                "use_dataset_description",
+                "use_echoices",
+            ):
+                if key in checkpoint_payload:
+                    cfg[key] = checkpoint_payload[key]
+
         model = cls(
             cfg,
             metadata=metadata,
@@ -92,7 +110,7 @@ class AspireModel(torch.nn.Module):
             target_indices=target_indices,
             target_column=target_column,
         ).to(device)
-        state_dict = torch.load(weights_path, map_location=device)
+        state_dict = checkpoint_payload
 
         # handle checkpoints saved with or without "model_state_dict" key
         if isinstance(state_dict, dict) and "model_state_dict" in state_dict:

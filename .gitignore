@@ -2,6 +2,7 @@
 /build
 /tests
 /example
+/original
 .pytest_cache/
 
 *__pycache__
@@ -10,4 +11,3 @@
 
 test.py
 *metadata_heart-c.json
-finetune_aspire.py
