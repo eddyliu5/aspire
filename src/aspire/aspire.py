@@ -64,10 +64,10 @@ class AspireModel(torch.nn.Module):
         target_column: str = "__target__",
     ):
         """
-        Load model + config from local path or Hugging Face hub.
+        Load model + config from Hugging Face hub or local path.
 
         Preferred metadata path for checkpoint usage is `feature_specs` plus optional
-        `dataset_context` and `target_indices` (defaults to the last feature spec index).
+        `dataset_context` and `target_indices` (defaults to the last column).
         """
         if os.path.isdir(repo_id):
             # Check if local dir exists first
@@ -198,12 +198,6 @@ class AspireModel(torch.nn.Module):
 
         If current instance has loaded weights (`from_pretrained`), fit runs as finetuning.
         Otherwise fit trains from scratch from the current randomly initialized weights.
-        If `feature_specs` were provided at initialization, fit uses those as the default
-        metadata schema (including dtype/range/choices).
-
-        Finetuning mode uses safer defaults inspired by the original pipeline:
-        lower backbone LR, optional BERT freezing, support examples, and
-        validation-based early stopping.
         """
         if self.metadata is None and not self.feature_specs_:
             raise ValueError(

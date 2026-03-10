@@ -621,7 +621,7 @@ class ClassificationHead(nn.Module):
 
 
 class ASPIREEnhanced(nn.Module):
-    """ASPIRE v2 architecture compatible with legacy checkpoints."""
+    """ASPIRE v2 architecture compatible with old checkpoints."""
 
     def __init__(
         self,
