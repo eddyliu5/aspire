@@ -25,5 +25,3 @@ Weights = "https://huggingface.co/placeholder"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-# TODO: optional cli for inference/training

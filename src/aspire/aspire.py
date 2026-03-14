@@ -7,7 +7,6 @@ from .data_loader import (
     build_examples_from_feature_specs,
     build_training_examples_from_feature_specs,
     build_prediction_dataframe,
-    build_training_dataframe,
     df_to_examples,
     training_metadata_from_feature_specs,
     validate_feature_specs,
@@ -22,7 +21,6 @@ class AspireModel(torch.nn.Module):
     def __init__(
         self,
         config: dict,
-        metadata: Optional[Mapping[str, Any]] = None,
         feature_specs: Optional[Sequence[Mapping[str, Any]]] = None,
         dataset_context: str = "",
         target_indices: Optional[Sequence[int]] = None,
@@ -31,7 +29,6 @@ class AspireModel(torch.nn.Module):
         super().__init__()
         self.config = config
         self.model = ASPIREEnhanced(**config)
-        self.metadata = metadata
         self.feature_specs_ = validate_feature_specs(feature_specs) if feature_specs is not None else []
         self.dataset_context = str(dataset_context or "")
         if target_indices is not None:
@@ -57,7 +54,6 @@ class AspireModel(torch.nn.Module):
         filename: str = "best_model.pt",
         config_name: str = "config.json",
         device: str = "cpu",
-        metadata: Optional[Mapping[str, Any]] = None,
         feature_specs: Optional[Sequence[Mapping[str, Any]]] = None,
         dataset_context: str = "",
         target_indices: Optional[Sequence[int]] = None,
@@ -66,7 +62,7 @@ class AspireModel(torch.nn.Module):
         """
         Load model + config from Hugging Face hub or local path.
 
-        Preferred metadata path for checkpoint usage is `feature_specs` plus optional
+        Preferred setup for checkpoint usage is `feature_specs` plus optional
         `dataset_context` and `target_indices` (defaults to the last column).
         """
         if os.path.isdir(repo_id):
@@ -104,7 +100,6 @@ class AspireModel(torch.nn.Module):
 
         model = cls(
             cfg,
-            metadata=metadata,
             feature_specs=feature_specs,
             dataset_context=dataset_context,
             target_indices=target_indices,
@@ -199,40 +194,27 @@ class AspireModel(torch.nn.Module):
         If current instance has loaded weights (`from_pretrained`), fit runs as finetuning.
         Otherwise fit trains from scratch from the current randomly initialized weights.
         """
-        if self.metadata is None and not self.feature_specs_:
+        if not self.feature_specs_:
             raise ValueError(
-                "metadata or feature_specs is required. Pass one of them when initializing AspireModel."
+                "feature_specs is required. Pass it when initializing AspireModel."
             )
 
-        if self.feature_specs_:
-            examples = build_training_examples_from_feature_specs(
-                X=X,
-                y=y,
-                feature_specs=self.feature_specs_,
-                dataset_context=self.dataset_context,
-                target_indices=self.target_indices_ if self.target_indices_ else None,
-            )
-            normalized_metadata = training_metadata_from_feature_specs(
-                X=X,
-                feature_specs=self.feature_specs_,
-                dataset_context=self.dataset_context,
-                target_indices=self.target_indices_ if self.target_indices_ else None,
-            )
-            if not examples:
-                raise ValueError("No valid training examples could be built from X/y.")
-            self.feature_desc_ = [vars(feature) for feature in examples[0].features]
-        else:
-            fit_metadata = self.metadata
-            train_df, normalized_metadata = build_training_dataframe(
-                X=X,
-                y=y,
-                metadata=fit_metadata,
-                target_column=self.target_column_,
-            )
-            examples = df_to_examples(train_df)
-            if not examples:
-                raise ValueError("No valid training examples could be built from X/y.")
-            self.feature_desc_ = list(train_df.attrs["feature_desc"])
+        examples = build_training_examples_from_feature_specs(
+            X=X,
+            y=y,
+            feature_specs=self.feature_specs_,
+            dataset_context=self.dataset_context,
+            target_indices=self.target_indices_ if self.target_indices_ else None,
+        )
+        normalized_metadata = training_metadata_from_feature_specs(
+            X=X,
+            feature_specs=self.feature_specs_,
+            dataset_context=self.dataset_context,
+            target_indices=self.target_indices_ if self.target_indices_ else None,
+        )
+        if not examples:
+            raise ValueError("No valid training examples could be built from X/y.")
+        self.feature_desc_ = [vars(feature) for feature in examples[0].features]
 
         self.fit_mode_ = "finetune" if self._has_loaded_weights else "scratch"
 
@@ -272,11 +254,8 @@ class AspireModel(torch.nn.Module):
             patience=patience,
         )
 
-        if self.feature_specs_ and self.target_indices_:
-            target_name_set = {self.feature_desc_[idx]["name"] for idx in self.target_indices_ if 0 <= idx < len(self.feature_desc_)}
-            self.feature_names_in_ = [f["name"] for f in self.feature_desc_ if f["name"] not in target_name_set]
-        else:
-            self.feature_names_in_ = [f["name"] for f in self.feature_desc_ if f["name"] != self.target_column_]
+        target_name_set = {self.feature_desc_[idx]["name"] for idx in self.target_indices_ if 0 <= idx < len(self.feature_desc_)}
+        self.feature_names_in_ = [f["name"] for f in self.feature_desc_ if f["name"] not in target_name_set]
         self.dataset_description_ = normalized_metadata["dataset_description"]
         self.task_description_ = normalized_metadata["task_description"]
         self.target_description_ = normalized_metadata["target_description"]
