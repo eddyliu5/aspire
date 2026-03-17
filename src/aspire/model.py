@@ -77,6 +77,11 @@ def train_examples(
     if not examples:
         raise ValueError("No training examples were provided.")
 
+    if hasattr(model, "reset_runtime_caches") and callable(model.reset_runtime_caches):
+        model.reset_runtime_caches()
+    elif hasattr(model, "shared_text") and hasattr(model.shared_text, "clear_cache"):
+        model.shared_text.clear_cache()
+
     if random_state is not None:
         set_seeds(random_state)
 
@@ -148,7 +153,10 @@ def train_examples(
 
             if eval_metric < best_metric:
                 best_metric = eval_metric
-                best_state = deepcopy(model.state_dict())
+                best_state = {
+                    key: value.detach().cpu().clone() if torch.is_tensor(value) else deepcopy(value)
+                    for key, value in model.state_dict().items()
+                }
                 epochs_without_improvement = 0
             else:
                 epochs_without_improvement += 1
@@ -347,6 +355,12 @@ class SharedTextEncoder(nn.Module):
         self.max_len_desc = max_len_desc
         self.max_len_ctx = max_len_ctx
         self._cache = {}
+        self._seq_cache = {}
+
+    def clear_cache(self) -> None:
+        """Clear text caches used during training/inference."""
+        self._cache.clear()
+        self._seq_cache.clear()
 
     @torch.no_grad()
     def encode_text(
@@ -385,12 +399,18 @@ class SharedTextEncoder(nn.Module):
             text = "unknown"
         text = str(text)
 
+        key = f"{'CTXSEQ' if is_context else 'TXTSEQ'}::{text}"
+        if key in self._seq_cache:
+            out = self._seq_cache[key]
+            return out.to(device) if device is not None else out
+
         max_len = self.max_len_ctx if is_context else self.max_len_desc
         inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=max_len)
         bert_device = next(self.bert.parameters()).device
         inputs = {k: v.to(bert_device) for k, v in inputs.items()}
         outputs = self.bert(**inputs)
         tokens = outputs.last_hidden_state.squeeze(0)
+        self._seq_cache[key] = tokens.cpu()
         return tokens.to(device) if device is not None else tokens
 
 
@@ -693,6 +713,29 @@ class ASPIREEnhanced(nn.Module):
         self.cls_head = ClassificationHead(model_dim, bert_dim)
 
         self.mask_token = nn.Parameter(torch.randn(model_dim))
+        self._label_vec_cache = {}
+
+    def reset_runtime_caches(self) -> None:
+        """Clear runtime caches used to avoid repeated text encoding work."""
+        self.shared_text.clear_cache()
+        self._label_vec_cache.clear()
+
+    def _get_label_vecs(
+        self,
+        categories: List[str],
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return stacked label text vectors for a category list with caching."""
+        key = tuple(str(cat) for cat in categories)
+        cached = self._label_vec_cache.get(key)
+        if cached is None:
+            vecs = []
+            for cat in categories:
+                emb = self.shared_text.encode_text(str(cat), is_context=False, device=None)
+                vecs.append(emb.detach().cpu())
+            cached = torch.stack(vecs, dim=0)
+            self._label_vec_cache[key] = cached
+        return cached.to(device)
 
     def _select_targets(self, num_features: int, existing: Optional[List[int]] = None) -> List[int]:
         if existing and len(existing) > 0:
@@ -838,11 +881,7 @@ class ASPIREEnhanced(nn.Module):
                     if "[UNK]" not in categories:
                         categories = categories + ["[UNK]"]
 
-                    label_vecs = []
-                    for cat in categories:
-                        emb = self.shared_text.encode_text(str(cat), is_context=False, device=device)
-                        label_vecs.append(emb)
-                    label_vecs = torch.stack(label_vecs, dim=0)
+                    label_vecs = self._get_label_vecs(categories, device)
                     label_embs = self.cls_head.category_proj(label_vecs)
 
                     try:
@@ -916,11 +955,7 @@ class ASPIREEnhanced(nn.Module):
                 if "[UNK]" not in categories:
                     categories = categories + ["[UNK]"]
 
-                label_vecs = []
-                for cat in categories:
-                    emb = self.shared_text.encode_text(str(cat), is_context=False, device=device)
-                    label_vecs.append(emb)
-                label_vecs = torch.stack(label_vecs, dim=0)
+                label_vecs = self._get_label_vecs(categories, device)
                 label_embs = self.cls_head.category_proj(label_vecs)
 
                 logits = self.cls_head.logits(
