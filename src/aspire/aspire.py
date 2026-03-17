@@ -187,6 +187,7 @@ class AspireModel(torch.nn.Module):
         batch_size: int = 8,
         learning_rate: float = 1e-3,
         random_state: Optional[int] = None,
+        show_progress: bool = True,
     ) -> "AspireModel":
         """
         Fit/fine-tune model on a tabular dataset.
@@ -252,6 +253,7 @@ class AspireModel(torch.nn.Module):
             num_support=num_support,
             val_fraction=val_fraction,
             patience=patience,
+            show_progress=show_progress,
         )
 
         target_name_set = {self.feature_desc_[idx]["name"] for idx in self.target_indices_ if 0 <= idx < len(self.feature_desc_)}

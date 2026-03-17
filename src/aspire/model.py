@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from tqdm.auto import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 logging.basicConfig(level=logging.INFO)
@@ -63,6 +64,7 @@ def train_examples(
     val_fraction: float = 0.0,
     patience: int = 0,
     weight_decay: float = 0.01,
+    show_progress: bool = True,
 ) -> nn.Module:
     """
     Train model on a list of ASPIRE examples.
@@ -102,52 +104,68 @@ def train_examples(
     best_metric = float("inf")
     epochs_without_improvement = 0
 
-    for _ in range(max(1, num_epochs)):
-        model.train()
-        shuffled_examples = list(train_examples_)
-        random.shuffle(shuffled_examples)
-        epoch_loss = 0.0
-        n_batches = 0
+    total_epochs = max(1, num_epochs)
+    progress_bar = tqdm(total=total_epochs, desc="fit", unit="epoch") if show_progress else None
 
-        for idx in range(0, len(shuffled_examples), max(1, batch_size)):
-            batch = shuffled_examples[idx:idx + max(1, batch_size)]
-            optimizer.zero_grad()
-            loss = model(batch)
+    try:
+        for _ in range(total_epochs):
+            model.train()
+            shuffled_examples = list(train_examples_)
+            random.shuffle(shuffled_examples)
+            epoch_loss = 0.0
+            n_batches = 0
 
-            if torch.isnan(loss):
-                continue
+            for idx in range(0, len(shuffled_examples), max(1, batch_size)):
+                batch = shuffled_examples[idx:idx + max(1, batch_size)]
+                optimizer.zero_grad()
+                loss = model(batch)
 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            epoch_loss += loss.item()
-            n_batches += 1
+                if torch.isnan(loss):
+                    continue
 
-        train_metric = epoch_loss / max(1, n_batches)
-        eval_metric = train_metric
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+                n_batches += 1
 
-        if val_examples_:
-            model.eval()
-            val_loss = 0.0
-            val_batches = 0
-            with torch.no_grad():
-                for idx in range(0, len(val_examples_), max(1, batch_size)):
-                    batch = val_examples_[idx:idx + max(1, batch_size)]
-                    loss = model(batch)
-                    if torch.isnan(loss):
-                        continue
-                    val_loss += loss.item()
-                    val_batches += 1
-            eval_metric = val_loss / max(1, val_batches)
+            train_metric = epoch_loss / max(1, n_batches)
+            eval_metric = train_metric
 
-        if eval_metric < best_metric:
-            best_metric = eval_metric
-            best_state = deepcopy(model.state_dict())
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-            if val_examples_ and patience > 0 and epochs_without_improvement >= patience:
-                break
+            if val_examples_:
+                model.eval()
+                val_loss = 0.0
+                val_batches = 0
+                with torch.no_grad():
+                    for idx in range(0, len(val_examples_), max(1, batch_size)):
+                        batch = val_examples_[idx:idx + max(1, batch_size)]
+                        loss = model(batch)
+                        if torch.isnan(loss):
+                            continue
+                        val_loss += loss.item()
+                        val_batches += 1
+                eval_metric = val_loss / max(1, val_batches)
+
+            if eval_metric < best_metric:
+                best_metric = eval_metric
+                best_state = deepcopy(model.state_dict())
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+                if val_examples_ and patience > 0 and epochs_without_improvement >= patience:
+                    if progress_bar is not None:
+                        progress_bar.update(1)
+                    break
+
+            if progress_bar is not None:
+                postfix = {"train_loss": f"{train_metric:.4f}"}
+                if val_examples_:
+                    postfix["val_loss"] = f"{eval_metric:.4f}"
+                progress_bar.set_postfix(postfix)
+                progress_bar.update(1)
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
 
     if best_state is not None:
         model.load_state_dict(best_state)
