@@ -60,11 +60,13 @@ def train_examples(
     lr_head: Optional[float] = None,
     lr_backbone: Optional[float] = None,
     freeze_bert: bool = False,
+    freeze_backbone: bool = False,
     num_support: int = 0,
     val_fraction: float = 0.0,
     patience: int = 0,
     weight_decay: float = 0.01,
     show_progress: bool = True,
+    max_train_samples: int = 0,
 ) -> nn.Module:
     """
     Train model on a list of ASPIRE examples.
@@ -102,6 +104,7 @@ def train_examples(
         lr_head=lr_head,
         lr_backbone=lr_backbone,
         freeze_bert=freeze_bert,
+        freeze_backbone=freeze_backbone,
         weight_decay=weight_decay,
     )
 
@@ -117,6 +120,8 @@ def train_examples(
             model.train()
             shuffled_examples = list(train_examples_)
             random.shuffle(shuffled_examples)
+            if max_train_samples > 0 and len(shuffled_examples) > max_train_samples:
+                shuffled_examples = shuffled_examples[:max_train_samples]
             epoch_loss = 0.0
             n_batches = 0
 
@@ -166,9 +171,10 @@ def train_examples(
                     break
 
             if progress_bar is not None:
-                postfix = {"train_loss": f"{train_metric:.4f}"}
                 if val_examples_:
-                    postfix["val_loss"] = f"{eval_metric:.4f}"
+                    postfix = {"val_loss": f"{eval_metric:.4f}"}
+                else:
+                    postfix = {"train_loss": f"{train_metric:.4f}"}
                 progress_bar.set_postfix(postfix)
                 progress_bar.update(1)
     finally:
@@ -253,6 +259,7 @@ def _build_optimizer(
     lr_head: Optional[float] = None,
     lr_backbone: Optional[float] = None,
     freeze_bert: bool = False,
+    freeze_backbone: bool = False,
     weight_decay: float = 0.01,
 ) -> torch.optim.Optimizer:
     """Build optimizer with optional split learning rates for finetuning."""
@@ -275,7 +282,10 @@ def _build_optimizer(
         if name.startswith("reg_head.") or name.startswith("cls_head.") or name.startswith("prediction_heads."):
             head_params.append(parameter)
         else:
-            backbone_params.append(parameter)
+            if freeze_backbone:
+                parameter.requires_grad = False
+            else:
+                backbone_params.append(parameter)
 
     param_groups = []
     if backbone_params:
@@ -681,6 +691,7 @@ class ASPIREEnhanced(nn.Module):
         self.max_targets = max_targets
         self._label_smoothing = 0.1
         self._cls_loss_weight = 2.0
+        self._use_unk = True
         self.use_intra_set2set = use_intra_set2set
         self.use_dataset_description = use_dataset_description
         self.use_echoices = use_echoices
@@ -878,7 +889,7 @@ class ASPIREEnhanced(nn.Module):
                         continue
 
                     categories = list(feature.choices)
-                    if "[UNK]" not in categories:
+                    if self._use_unk and "[UNK]" not in categories:
                         categories = categories + ["[UNK]"]
 
                     label_vecs = self._get_label_vecs(categories, device)
@@ -887,7 +898,10 @@ class ASPIREEnhanced(nn.Module):
                     try:
                         idx = categories.index(str(value))
                     except ValueError:
-                        idx = categories.index("[UNK]")
+                        if "[UNK]" in categories:
+                            idx = categories.index("[UNK]")
+                        else:
+                            continue
 
                     logits = self.cls_head.logits(
                         h.unsqueeze(0),
@@ -952,7 +966,7 @@ class ASPIREEnhanced(nn.Module):
                 probs_list.append(None)
             else:
                 categories = list(feature.choices) if feature.choices else []
-                if "[UNK]" not in categories:
+                if self._use_unk and "[UNK]" not in categories:
                     categories = categories + ["[UNK]"]
 
                 label_vecs = self._get_label_vecs(categories, device)

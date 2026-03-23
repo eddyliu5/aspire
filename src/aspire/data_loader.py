@@ -276,9 +276,9 @@ def build_training_examples_from_feature_specs(
     context = str(dataset_context or "")
     examples: List[Example] = []
 
-    for row_idx, row in X_df.iterrows():
+    for pos_idx, (row_idx, row) in enumerate(X_df.iterrows()):
         values = [row.get(name, None) for name in feature_names]
-        values[target_idx] = y_series.iloc[row_idx]
+        values[target_idx] = y_series.iloc[pos_idx]
         examples.append(
             Example(
                 features=features,

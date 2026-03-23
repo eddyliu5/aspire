@@ -8,6 +8,15 @@
 *__pycache__
 *egg-info/
 *.DS_Store
-
+*.log
+run_contexttab_ft.py
+run_contexttab_ft.sh
+diagnose_diabetes.py
+diagnose_diabetes.sh
+diagnose_predict.py
+datasets.py
+diagnose_representations.py
+run_demo2.py
+run_diabetes.py
 test.py
 *metadata_heart-c.json

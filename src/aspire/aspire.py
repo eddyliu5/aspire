@@ -1,8 +1,10 @@
-import os, json, logging, torch
-from typing import Any, List, Mapping, Optional, Sequence
+import math, os, json, logging, random, torch
+import numpy as np
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from huggingface_hub import hf_hub_download
 from sklearn.exceptions import NotFittedError
-from .model import ASPIREEnhanced, Example, train_examples
+from sklearn.metrics import accuracy_score, f1_score, mean_squared_error, r2_score
+from .model import ASPIREEnhanced, Example, train_examples, _attach_support_examples
 from .data_loader import (
     build_examples_from_feature_specs,
     build_training_examples_from_feature_specs,
@@ -46,6 +48,7 @@ class AspireModel(torch.nn.Module):
         self.task_description_: Optional[str] = None
         self.target_description_: Optional[str] = None
         self.feature_names_in_: List[str] = []
+        self._support_examples: List[Example] = []
 
     @classmethod
     def from_pretrained(
@@ -166,6 +169,10 @@ class AspireModel(torch.nn.Module):
                     "a fitted model, or a DataFrame with metadata attrs."
                 )
 
+            if self._support_examples:
+                from .model import _attach_support_examples
+                _attach_support_examples(examples, self._support_examples, num_support=min(5, len(self._support_examples)))
+
             preds = []
             step = max(1, batch_size)
             for idx in range(0, len(examples), step):
@@ -188,13 +195,11 @@ class AspireModel(torch.nn.Module):
         learning_rate: float = 1e-3,
         random_state: Optional[int] = None,
         show_progress: bool = True,
+        finetune_mode: Optional[str] = None,
+        max_train_samples: int = 0,
+        test_fraction: float = 0.0,
     ) -> "AspireModel":
-        """
-        Fit/fine-tune model on a tabular dataset.
 
-        If current instance has loaded weights (`from_pretrained`), fit runs as finetuning.
-        Otherwise fit trains from scratch from the current randomly initialized weights.
-        """
         if not self.feature_specs_:
             raise ValueError(
                 "feature_specs is required. Pass it when initializing AspireModel."
@@ -217,9 +222,37 @@ class AspireModel(torch.nn.Module):
             raise ValueError("No valid training examples could be built from X/y.")
         self.feature_desc_ = [vars(feature) for feature in examples[0].features]
 
-        self.fit_mode_ = "finetune" if self._has_loaded_weights else "scratch"
+        # Hold out test examples before training
+        test_examples_ = []
+        if test_fraction > 0 and len(examples) >= 5:
+            rng = random.Random(random_state)
+            shuffled = list(examples)
+            rng.shuffle(shuffled)
+            n_test = max(1, int(len(shuffled) * test_fraction))
+            test_examples_ = shuffled[:n_test]
+            examples = shuffled[n_test:]
 
-        if self.fit_mode_ == "finetune":
+        if finetune_mode is not None:
+            self.fit_mode_ = finetune_mode
+        else:
+            self.fit_mode_ = "finetune" if self._has_loaded_weights else "scratch"
+
+        if self.fit_mode_ in ("head_only", "finetune"):
+            self.model._use_unk = False
+            with torch.no_grad():
+                self.model.cls_head.log_temperature.fill_(math.log(2.0))
+        else:
+            self.model._use_unk = True
+
+        if self.fit_mode_ == "head_only":
+            resolved_lr_head = learning_rate
+            resolved_lr_backbone = 0.0
+            freeze_bert = True
+            freeze_backbone = True
+            num_support = 5
+            val_fraction = 0.0
+            patience = 10
+        elif self.fit_mode_ == "finetune":
             # Keep user override behavior simple: if learning_rate stays at the
             # wrapper default, switch to safer finetuning rates.
             if learning_rate == 1e-3:
@@ -229,6 +262,7 @@ class AspireModel(torch.nn.Module):
                 resolved_lr_head = learning_rate
                 resolved_lr_backbone = learning_rate
             freeze_bert = True
+            freeze_backbone = False
             num_support = 5
             val_fraction = 0.2
             patience = 5
@@ -236,6 +270,7 @@ class AspireModel(torch.nn.Module):
             resolved_lr_head = learning_rate
             resolved_lr_backbone = learning_rate
             freeze_bert = False
+            freeze_backbone = False
             num_support = 0
             val_fraction = 0.0
             patience = 0
@@ -250,11 +285,22 @@ class AspireModel(torch.nn.Module):
             lr_head=resolved_lr_head,
             lr_backbone=resolved_lr_backbone,
             freeze_bert=freeze_bert,
+            freeze_backbone=freeze_backbone,
             num_support=num_support,
             val_fraction=val_fraction,
             patience=patience,
             show_progress=show_progress,
+            max_train_samples=max_train_samples,
         )
+
+        self._support_examples = examples
+
+        # Evaluate on held-out test set if requested
+        self.fit_metrics_: Dict[str, Any] = {}
+        if test_examples_:
+            if num_support > 0:
+                _attach_support_examples(test_examples_, examples, num_support=num_support)
+            self.fit_metrics_ = self._evaluate_examples(test_examples_)
 
         target_name_set = {self.feature_desc_[idx]["name"] for idx in self.target_indices_ if 0 <= idx < len(self.feature_desc_)}
         self.feature_names_in_ = [f["name"] for f in self.feature_desc_ if f["name"] not in target_name_set]
@@ -263,3 +309,80 @@ class AspireModel(torch.nn.Module):
         self.target_description_ = normalized_metadata["target_description"]
         self.is_fitted_ = True
         return self
+
+    def _evaluate_examples(self, test_examples: List[Example]) -> Dict[str, Any]:
+        """Evaluate model on a list of examples and return metrics."""
+        self.model.eval()
+        cls_preds, cls_targets = [], []
+        reg_preds, reg_targets = [], []
+
+        with torch.no_grad():
+            for ex in test_examples:
+                try:
+                    preds = self.model.predict(ex)
+                    for j, t_idx in enumerate(ex.target_indices):
+                        if j >= len(preds) or preds[j] is None:
+                            continue
+                        feat = ex.features[t_idx]
+                        true_val = ex.values[t_idx]
+                        pred_val = preds[j]
+                        if feat.dtype == "continuous":
+                            try:
+                                pv = float(pred_val)
+                                tv = float(true_val)
+                                if np.isfinite(pv) and np.isfinite(tv):
+                                    reg_preds.append(pv)
+                                    reg_targets.append(tv)
+                            except Exception:
+                                pass
+                        else:
+                            cls_preds.append(str(pred_val))
+                            cls_targets.append(str(true_val))
+                except Exception:
+                    continue
+
+        metrics: Dict[str, Any] = {}
+        if cls_preds:
+            metrics["accuracy"] = accuracy_score(cls_targets, cls_preds)
+            metrics["f1_weighted"] = f1_score(cls_targets, cls_preds, average="weighted", zero_division=0)
+            metrics["f1_macro"] = f1_score(cls_targets, cls_preds, average="macro", zero_division=0)
+            metrics["n_cls"] = len(cls_preds)
+        if reg_preds:
+            mse = mean_squared_error(reg_targets, reg_preds)
+            metrics["rmse"] = float(np.sqrt(mse))
+            metrics["r2"] = r2_score(reg_targets, reg_preds) if len(reg_preds) > 1 else 0.0
+            metrics["n_reg"] = len(reg_preds)
+        return metrics
+
+    def score(
+        self,
+        X: Any,
+        y: Sequence[Any],
+        num_support: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Evaluate model on new data using ICL with support examples from fit().
+        Returns dict of metrics (accuracy, f1, rmse, r2 as applicable).
+        """
+        if not self.is_fitted_:
+            raise NotFittedError("Call fit() before score().")
+        if not self.feature_specs_:
+            raise ValueError("feature_specs is required.")
+
+        test_examples = build_training_examples_from_feature_specs(
+            X=X,
+            y=y,
+            feature_specs=self.feature_specs_,
+            dataset_context=self.dataset_context,
+            target_indices=self.target_indices_ if self.target_indices_ else None,
+        )
+        if not test_examples:
+            raise ValueError("No valid test examples could be built from X/y.")
+
+        if self._support_examples and num_support > 0:
+            _attach_support_examples(
+                test_examples, self._support_examples,
+                num_support=min(num_support, len(self._support_examples)),
+            )
+
+        return self._evaluate_examples(test_examples)
