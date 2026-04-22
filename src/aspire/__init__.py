@@ -1,2 +1,3 @@
 from .aspire import AspireModel
-__all__ = ["AspireModel"]
+from .model import ASPIRELite, ASPIREEnhanced
+__all__ = ["AspireModel", "ASPIRELite", "ASPIREEnhanced"]

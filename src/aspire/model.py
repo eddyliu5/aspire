@@ -969,3 +969,285 @@ class ASPIREEnhanced(nn.Module):
                 probs_list.append(probs.detach().cpu().numpy())
 
         return (preds, probs_list) if return_probs else preds
+
+
+class CrossFeatureInteraction(nn.Module):
+    """Standard transformer encoder over feature atoms (replaces ISAB-based IntraSet2Set)."""
+
+    def __init__(self, model_dim: int, num_heads: int = 8, num_layers: int = 2, dropout: float = 0.1):
+        super().__init__()
+        layer = nn.TransformerEncoderLayer(
+            d_model=model_dim, nhead=num_heads,
+            dim_feedforward=model_dim * 2, dropout=dropout,
+            activation="gelu", batch_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(layer, num_layers=num_layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x.unsqueeze(0)).squeeze(0)
+
+    def forward_batch(self, x: torch.Tensor) -> torch.Tensor:
+        return self.encoder(x)
+
+
+class ASPIRELite(nn.Module):
+    """
+    ASPIRE Lite — swaps ISAB IntraSet2Set for a standard transformer encoder
+    (CrossFeatureInteraction) and prepends a dataset-context token before interaction.
+    Drop-in replacement for ASPIREEnhanced in the v2 finetuning path.
+    """
+
+    def __init__(
+        self,
+        model_dim: int = 768,
+        num_heads: int = 8,
+        num_inds: int = 32,
+        interaction_layers: int = 2,
+        inter_layers: int = 2,
+        mask_prob: float = 0.4,
+        max_targets: int = 3,
+        shared_bert: str = "bert-base-uncased",
+    ):
+        super().__init__()
+        self.model_dim = model_dim
+        self.mask_prob = mask_prob
+        self.max_targets = max_targets
+
+        self.shared_text = SharedTextEncoder(shared_bert)
+        bert_dim = self.shared_text.bert.config.hidden_size
+
+        self.semantic_grounding = SemanticFeatureGrounding(model_dim, self.shared_text)
+        self.atom_processing = AtomProcessing(model_dim, self.shared_text)
+
+        self.mask_token = nn.Parameter(torch.randn(model_dim) * 0.02)
+        self.ctx_proj = nn.Linear(bert_dim, model_dim)
+
+        self.interaction = CrossFeatureInteraction(model_dim, num_heads, interaction_layers)
+
+        self.inter_aggregator = InterInstanceAggregator(
+            model_dim=model_dim, bert_dim=bert_dim,
+            num_heads=num_heads, num_inds=num_inds, num_layers=inter_layers,
+        )
+
+        self.reg_head = MoGRegressionHead(model_dim)
+        self.cls_head = ClassificationHead(model_dim, bert_dim)
+
+        self._label_vec_cache: dict = {}
+
+    def reset_runtime_caches(self) -> None:
+        self.shared_text.clear_cache()
+        self._label_vec_cache.clear()
+
+    def _get_label_vecs(self, categories: List[str], device: torch.device) -> torch.Tensor:
+        key = tuple(str(c) for c in categories)
+        cached = self._label_vec_cache.get(key)
+        if cached is None:
+            vecs = [self.shared_text.encode_text(str(c), is_context=False, device=None).detach().cpu()
+                    for c in categories]
+            cached = torch.stack(vecs, dim=0)
+            self._label_vec_cache[key] = cached
+        return cached.to(device)
+
+    def _process_atoms(
+        self,
+        features: List[Feature],
+        values: List[Any],
+        device: torch.device,
+        target_indices: Optional[List[int]] = None,
+        mask_targets: bool = False,
+    ) -> torch.Tensor:
+        target_set = set(target_indices) if target_indices else set()
+        phi = [self.semantic_grounding(f, device) for f in features]
+        atoms = []
+        for i, (f, v) in enumerate(zip(features, values)):
+            if mask_targets and i in target_set:
+                atoms.append(self.mask_token.to(device))
+            else:
+                atoms.append(self.atom_processing(f, v, phi[i], device))
+        return torch.stack(atoms)
+
+    def _embed_with_ctx(
+        self,
+        features: List[Feature],
+        values: List[Any],
+        device: torch.device,
+        target_indices: Optional[List[int]] = None,
+        mask_targets: bool = False,
+        dataset_context: str = "",
+    ) -> Tuple[torch.Tensor, int]:
+        atoms = self._process_atoms(features, values, device, target_indices, mask_targets)
+        if dataset_context:
+            ctx_raw = self.shared_text.encode_text(dataset_context, is_context=True, device=device)
+            ctx_emb = self.ctx_proj(ctx_raw).unsqueeze(0)
+            return torch.cat([ctx_emb, atoms], dim=0), 1
+        return atoms, 0
+
+    def forward(self, batch: List[Example]) -> torch.Tensor:
+        device = next(self.parameters()).device
+        total_loss = torch.tensor(0.0, device=device)
+        total_targets = 0
+
+        for example in batch:
+            if not example.features:
+                continue
+            if self.training:
+                targets = [random.randint(0, len(example.features) - 1)]
+            else:
+                targets = list(example.target_indices)
+            if not targets:
+                continue
+
+            inst, ctx_off = self._embed_with_ctx(
+                example.features, example.values, device,
+                target_indices=targets, mask_targets=True,
+                dataset_context=example.dataset_context or "",
+            )
+            inst = self.interaction(inst)
+            feat_embs = inst[ctx_off:]
+
+            observed = [i for i in range(len(example.features)) if i not in targets]
+            query_atoms = feat_embs[observed]
+            target_atoms = feat_embs[targets]
+
+            support_list = []
+            if example.support_examples:
+                for sup in example.support_examples:
+                    s_inst, s_off = self._embed_with_ctx(
+                        sup.features, sup.values, device,
+                        dataset_context=sup.dataset_context or "")
+                    support_list.append(self.interaction(s_inst)[s_off:])
+
+            bert_dim = self.shared_text.bert.config.hidden_size
+            ctx_data_tokens = (
+                self.shared_text.encode_text_sequence(
+                    example.dataset_context, is_context=True, device=device)
+                if example.dataset_context
+                else torch.zeros(1, bert_dim, device=device)
+            )
+            ctx_target_tokens = self.shared_text.encode_text_sequence(
+                " ".join(example.features[t].description or example.features[t].name for t in targets),
+                is_context=False, device=device,
+            )
+
+            target_reprs = self.inter_aggregator(
+                query_atoms=query_atoms,
+                target_atoms=target_atoms,
+                support_atoms=support_list,
+                context_data_tokens=ctx_data_tokens,
+                context_target_tokens=ctx_target_tokens,
+            )
+
+            for ti, feat_idx in enumerate(targets):
+                feature = example.features[feat_idx]
+                value = example.values[feat_idx]
+                h = target_reprs[ti]
+
+                if feature.dtype == "continuous":
+                    try:
+                        raw = float(value)
+                    except Exception:
+                        continue
+                    if feature.value_range:
+                        vmin, vmax = feature.value_range
+                        tnorm = float(np.clip((raw - vmin) / max(1e-8, vmax - vmin), 0.0, 1.0))
+                    else:
+                        tnorm = (math.tanh(raw / 100.0) + 1.0) / 2.0
+                    loss = self.reg_head.nll(
+                        h.unsqueeze(0),
+                        torch.tensor([tnorm], device=device, dtype=torch.float32),
+                    )
+                else:
+                    if not feature.choices:
+                        continue
+                    cats = list(feature.choices)
+                    if "[UNK]" not in cats:
+                        cats.append("[UNK]")
+                    label_vecs = self._get_label_vecs(cats, device)
+                    label_embs = self.cls_head.category_proj(label_vecs)
+                    try:
+                        idx = cats.index(str(value))
+                    except ValueError:
+                        idx = cats.index("[UNK]")
+                    logits = self.cls_head.logits(h.unsqueeze(0), label_embs)
+                    loss = F.cross_entropy(
+                        logits,
+                        torch.tensor([idx], device=device, dtype=torch.long),
+                        label_smoothing=0.1,
+                    ) * 2.0
+
+                total_loss = total_loss + loss
+                total_targets += 1
+
+        return total_loss / max(1, total_targets)
+
+    @torch.no_grad()
+    def predict(self, example: Example, return_probs: bool = False):
+        self.eval()
+        device = next(self.parameters()).device
+        targets = list(example.target_indices)
+
+        inst, ctx_off = self._embed_with_ctx(
+            example.features, example.values, device,
+            target_indices=targets, mask_targets=True,
+            dataset_context=example.dataset_context or "",
+        )
+        inst = self.interaction(inst)
+        feat_embs = inst[ctx_off:]
+
+        observed = [i for i in range(len(example.features)) if i not in targets]
+        query_atoms = feat_embs[observed]
+        target_atoms = feat_embs[targets]
+
+        support_list = []
+        if example.support_examples:
+            for sup in example.support_examples:
+                s_inst, s_off = self._embed_with_ctx(
+                    sup.features, sup.values, device,
+                    dataset_context=sup.dataset_context or "")
+                support_list.append(self.interaction(s_inst)[s_off:])
+
+        bert_dim = self.shared_text.bert.config.hidden_size
+        ctx_data_tokens = (
+            self.shared_text.encode_text_sequence(
+                example.dataset_context, is_context=True, device=device)
+            if example.dataset_context
+            else torch.zeros(1, bert_dim, device=device)
+        )
+        ctx_target_tokens = self.shared_text.encode_text_sequence(
+            " ".join(example.features[t].description or example.features[t].name for t in targets),
+            is_context=False, device=device,
+        )
+
+        target_reprs = self.inter_aggregator(
+            query_atoms=query_atoms, target_atoms=target_atoms,
+            support_atoms=support_list,
+            context_data_tokens=ctx_data_tokens,
+            context_target_tokens=ctx_target_tokens,
+        )
+
+        preds, probs_list = [], []
+        for ti, feat_idx in enumerate(targets):
+            feature = example.features[feat_idx]
+            h = target_reprs[ti]
+
+            if feature.dtype == "continuous":
+                y_norm = self.reg_head.predict(h.unsqueeze(0)).squeeze(0).item()
+                if feature.value_range:
+                    vmin, vmax = feature.value_range
+                    preds.append(float(y_norm * (vmax - vmin) + vmin))
+                else:
+                    preds.append(float((y_norm - 0.5) * 200.0))
+                probs_list.append(None)
+            else:
+                cats = list(feature.choices) if feature.choices else []
+                if "[UNK]" not in cats:
+                    cats.append("[UNK]")
+                label_vecs = self._get_label_vecs(cats, device)
+                label_embs = self.cls_head.category_proj(label_vecs)
+                logits = self.cls_head.logits(h.unsqueeze(0), label_embs)
+                probs = torch.softmax(logits, dim=-1).squeeze(0)
+                idx = int(torch.argmax(probs).item())
+                preds.append(cats[idx])
+                probs_list.append(probs.detach().cpu().numpy())
+
+        return (preds, probs_list) if return_probs else preds
