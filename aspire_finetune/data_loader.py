@@ -57,11 +57,15 @@ def build_bundle_from_feature_specs(
             feature_descs[col] = col.replace("_", " ")
         col_names.append(col)
 
-    y_unique = y_series.astype(str).nunique()
-    if y_series.dtype == object or y_unique <= 30:
-        col_types[target_col] = "cat"
+    target_spec = next((s for s in feature_specs if s["name"] == target_col), None)
+    if target_spec:
+        col_types[target_col] = _to_col_type(target_spec["dtype"])
     else:
-        col_types[target_col] = "num"
+        y_unique = y_series.astype(str).nunique()
+        if y_series.dtype == object or y_unique <= 30:
+            col_types[target_col] = "cat"
+        else:
+            col_types[target_col] = "num"
     feature_descs[target_col] = target_col.replace("_", " ")
     col_names.append(target_col)
 
