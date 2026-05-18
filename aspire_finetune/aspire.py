@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from sklearn.linear_model import Ridge
+from sklearn.linear_model import Ridge, LogisticRegression
 from sklearn.metrics import f1_score
 from torch.amp import autocast, GradScaler
 
@@ -327,51 +327,20 @@ class ASPIRE:
             probe.fit(all_embs, all_labels)
             return model, probe
         else:
+            all_embs = np.concatenate([train_embs, val_embs], axis=0)
+            all_labels = np.concatenate([train_labels, val_labels], axis=0)
             n_classes = len(self._classes)
-            head = LinearHead(D_MODEL, n_classes).to(device_obj)
-            y_tr_t = torch.tensor(train_labels, dtype=torch.long, device=device_obj)
-            logger.info("Embedding shape: %s  n_classes=%d", train_embs.shape, n_classes)
-
-        optimizer = torch.optim.AdamW(head.parameters(), lr=lr, weight_decay=1e-4)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
-
-        X_tr = torch.tensor(train_embs, dtype=torch.float32, device=device_obj)
-        X_val = torch.tensor(val_embs, dtype=torch.float32, device=device_obj)
-
-        best_metric, best_state = -1.0, None
-        log_every = max(1, num_epochs // 5)
-
-        for epoch in range(num_epochs):
-            head.train()
-            perm = torch.randperm(len(X_tr), device=device_obj)
-            ep_loss, n_b = 0.0, 0
-            for i in range(0, len(X_tr), batch_size):
-                idx = perm[i: i + batch_size]
-                out = head(X_tr[idx])
-                loss = F.cross_entropy(out, y_tr_t[idx])
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                ep_loss += loss.item(); n_b += 1
-            scheduler.step()
-
-            head.eval()
-            with torch.no_grad():
-                val_out = head(X_val)
-            val_preds = val_out.argmax(dim=1).cpu().numpy()
+            logger.info("Embedding shape: %s  n_classes=%d  [LogisticRegression probe]",
+                        train_embs.shape, n_classes)
+            probe = LogisticRegression(
+                C=1.0, class_weight="balanced", max_iter=1000,
+                solver="lbfgs", multi_class="auto",
+            )
+            probe.fit(all_embs, all_labels)
+            val_preds = probe.predict(val_embs)
             val_f1 = f1_score(val_labels, val_preds, average="macro", zero_division=0)
-            if val_f1 > best_metric:
-                best_metric = val_f1
-                best_state = deepcopy(head.state_dict())
-            if show_progress and (epoch + 1) % log_every == 0:
-                logger.info("  [v2] epoch %d/%d  loss=%.4f  val_f1=%.4f",
-                            epoch + 1, num_epochs, ep_loss / max(1, n_b), val_f1)
-
-        if best_state:
-            head.load_state_dict(best_state)
-        head.eval()
-        logger.info("Best v2 val F1 (macro): %.4f", best_metric)
-        return model, head
+            logger.info("LR probe  val F1-macro=%.4f", val_f1)
+            return model, probe
 
     def _fit_head_v2(
         self, model, bundle, device_obj, use_amp, amp_dtype, use_scaler,
@@ -638,7 +607,7 @@ class ASPIRE:
 
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         X_df = X_df.reset_index(drop=True)
-        dummy_y = [self._classes[0] if self._classes else 0] * len(X_df)
+        dummy_y = [self._classes[i % len(self._classes)] for i in range(len(X_df))] if self._classes else [0] * len(X_df)
         test_bundle = build_bundle_from_feature_specs(
             X=X_df, y=dummy_y,
             feature_specs=self.feature_specs_,
@@ -669,7 +638,7 @@ class ASPIRE:
 
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         X_df = X_df.reset_index(drop=True)
-        dummy_y = [self._classes[0] if self._classes else 0] * len(X_df)
+        dummy_y = [self._classes[i % len(self._classes)] for i in range(len(X_df))] if self._classes else [0] * len(X_df)
         test_bundle = build_bundle_from_feature_specs(
             X=X_df, y=dummy_y,
             feature_specs=self.feature_specs_,
@@ -694,7 +663,7 @@ class ASPIRE:
 
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         X_df = X_df.reset_index(drop=True)
-        dummy_y = [self._classes[0] if self._classes else 0] * len(X_df)
+        dummy_y = [self._classes[i % len(self._classes)] for i in range(len(X_df))] if self._classes else [0] * len(X_df)
         test_bundle = build_bundle_from_feature_specs(
             X=X_df, y=dummy_y,
             feature_specs=self.feature_specs_,
@@ -721,6 +690,8 @@ class ASPIRE:
             logger.info("v2 reg unscale: mu=%.4f sigma=%.4f  pred_norm range=[%.3f, %.3f]",
                         mu_s, sigma_s, preds_norm.min(), preds_norm.max())
             return (preds_norm * sigma_s + mu_s).reshape(-1, 1)
+        if isinstance(head, LogisticRegression):
+            return head.predict_proba(embs)
         head.eval()
         X_t = torch.tensor(embs, dtype=torch.float32, device=device_obj)
         with torch.no_grad():
@@ -736,7 +707,7 @@ class ASPIRE:
 
         X_df = X if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
         X_df = X_df.reset_index(drop=True)
-        dummy_y = [self._classes[0] if self._classes else "0"] * len(X_df)
+        dummy_y = [self._classes[i % len(self._classes)] for i in range(len(X_df))] if self._classes else ["0"] * len(X_df)
         test_bundle = build_bundle_from_feature_specs(
             X=X_df, y=dummy_y,
             feature_specs=self.feature_specs_,
