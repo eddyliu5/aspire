@@ -95,34 +95,23 @@ def evaluate_dataset(name, config, args):
         "y": y_train,
         "random_state": args.seed,
         "task_type": task_type,
+        "batch_size": args.batch_size,
+        "include_desc": True,
     }
     if task_type == "classification":
         fit_kwargs["shots_per_class"] = args.shots
+        fit_kwargs["probe_c"] = args.probe_c
     else:
         fit_kwargs["max_support"] = args.shots
+        fit_kwargs["probe_alpha"] = args.probe_alpha
     model.fit_few_shot(**fit_kwargs)
     predictions = model.predict(X_test, batch_size=args.batch_size, include_desc=True)
-    # A standard frozen-representation probe: only the selected labeled shots
-    # train the probe, and embeddings omit ICL support to avoid self-label leakage.
-    support_frame = pd.DataFrame(model._support_rows).reset_index(drop=True)
-    feature_columns = [col for col in bundle.columns if col != target_col]
-    support_X = support_frame[feature_columns]
-    support_y = support_frame[target_col]
-    support_embeddings = model.get_embeddings(
-        support_X, batch_size=args.batch_size, include_desc=True, use_support=False
-    )
+    # fit_few_shot owns the support-trained probe; retain shot_probe_* as a
+    # backwards-compatible alias for its predictions in the result schema.
+    shot_probe_predictions = predictions
     query_embeddings = model.get_embeddings(
         X_test, batch_size=args.batch_size, include_desc=True, use_support=False
     )
-    if task_type == "classification":
-        shot_probe = LogisticRegression(
-            C=args.probe_c, class_weight="balanced", max_iter=3000, solver="lbfgs"
-        ).fit(support_embeddings, support_y.astype(str))
-    else:
-        shot_probe = Ridge(alpha=args.probe_alpha).fit(
-            support_embeddings, pd.to_numeric(support_y, errors="coerce")
-        )
-    shot_probe_predictions = shot_probe.predict(query_embeddings)
 
     if task_type == "classification":
         truth = y_test.astype(str).tolist()

@@ -21,16 +21,24 @@ class FakeBackbone(torch.nn.Module):
         support_x_txt=None,
         support_x_num=None,
         desc_txt=None,
+        return_encoded=False,
     ):
         self.last_support_shape = (
             None if support_x_txt is None else support_x_txt.shape
         )
         batch_size = len(x_txt)
         if target_type == "cat":
-            return torch.arange(
+            predictions = torch.arange(
                 d_output, dtype=torch.float32, device=self.anchor.device
             ).repeat(batch_size, 1)
-        return torch.zeros((batch_size, 30), device=self.anchor.device)
+        else:
+            predictions = torch.zeros((batch_size, 30), device=self.anchor.device)
+        if return_encoded:
+            encoded = torch.ones(
+                (batch_size, d_output, 8), device=self.anchor.device
+            )
+            return predictions, encoded
+        return predictions
 
 
 def test_few_shot_uses_balanced_support_and_all_classes(monkeypatch):
@@ -64,8 +72,9 @@ def test_few_shot_uses_balanced_support_and_all_classes(monkeypatch):
     assert model.fit_mode_ == "few_shot"
     assert model.support_size_ == 3
     assert probabilities.shape == (1, 3)
-    assert fake.last_support_shape[1] == 3
-    assert model.predict(pd.DataFrame({"value": [2.5]})) == ["c"]
+    assert fake.last_support_shape is None
+    assert isinstance(model._few_shot_probe, aspire_module.LogisticRegression)
+    assert model.predict(pd.DataFrame({"value": [2.5]}))[0] in model._classes
     assert all(not parameter.requires_grad for parameter in fake.parameters())
 
 

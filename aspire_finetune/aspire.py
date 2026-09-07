@@ -156,6 +156,7 @@ class ASPIRE:
         self._support_rows: List = []
         self._v2_head: Optional[LinearHead] = None
         self._xgb_clf = None
+        self._few_shot_probe = None
         self.support_size_: int = 0
 
     @classmethod
@@ -207,6 +208,8 @@ class ASPIRE:
                 y=y,
                 max_support=num_support or None,
                 random_state=random_state,
+                batch_size=batch_size,
+                include_desc=include_desc,
             )
 
 
@@ -314,7 +317,12 @@ class ASPIRE:
         max_support: Optional[int] = None,
         random_state: int = 42,
         task_type: Optional[str] = None,
+        batch_size: int = 64,
+        include_desc: bool = True,
+        probe_c: float = 1.0,
+        probe_alpha: float = 1.0,
     ) -> "ASPIRE":
+        """Fit a linear probe on frozen ASPIRE embeddings from selected shots."""
 
         if shots_per_class is not None and max_support is not None:
             raise ValueError("Use either shots_per_class or max_support, not both")
@@ -424,11 +432,49 @@ class ASPIRE:
         for parameter in self._model.parameters():
             parameter.requires_grad = False
         self._model.eval()
+
+        device_obj = torch.device(self.device)
+        use_amp = device_obj.type == "cuda"
+        amp_dtype = (
+            torch.bfloat16
+            if use_amp and torch.cuda.is_bf16_supported()
+            else torch.float16
+        )
+        support_embeddings, _ = _cache_h_vectors(
+            self._model,
+            bundle,
+            self._support_rows,
+            self.target_column_,
+            support_rows=None,
+            include_desc=include_desc,
+            device=device_obj,
+            batch_size=batch_size,
+            use_amp=use_amp,
+            amp_dtype=amp_dtype,
+            target_choices=self._classes or None,
+        )
+        support_targets = bundle.df.iloc[selected][self.target_column_]
+        if target_is_categorical:
+            if len(self._classes) < 2:
+                raise ValueError("A classification probe requires at least two classes")
+            self._few_shot_probe = LogisticRegression(
+                C=probe_c,
+                class_weight="balanced",
+                max_iter=3000,
+                solver="lbfgs",
+            ).fit(support_embeddings, support_targets.astype(str))
+        else:
+            self._few_shot_probe = Ridge(alpha=probe_alpha).fit(
+                support_embeddings,
+                pd.to_numeric(
+                    support_targets, errors="raise"
+                ).to_numpy(dtype=float),
+            )
         self._v2_head = None
         self._xgb_clf = None
         self.fit_mode_ = "few_shot"
         self.is_fitted_ = True
-        logger.info("Configured few-shot inference with %d support rows", self.support_size_)
+        logger.info("Fitted few-shot linear probe on %d support rows", self.support_size_)
         return self
 
     def _fit_v2(
@@ -846,6 +892,30 @@ class ASPIRE:
             out = head(X_t)
         return torch.softmax(out, dim=-1).cpu().numpy()
 
+    def _predict_few_shot_probe(
+        self, X: Any, batch_size: int = 64, include_desc: bool = True
+    ) -> np.ndarray:
+        embeddings = self.get_embeddings(
+            X,
+            batch_size=batch_size,
+            include_desc=include_desc,
+            use_support=False,
+        )
+        target_type = self._bundle.col_types.get(self.target_column_, "cat")
+        if target_type == "num":
+            return np.asarray(
+                self._few_shot_probe.predict(embeddings)
+            ).reshape(-1, 1)
+
+        raw = self._few_shot_probe.predict_proba(embeddings)
+        probabilities = np.zeros(
+            (len(embeddings), len(self._classes)), dtype=raw.dtype
+        )
+        class_to_index = {label: i for i, label in enumerate(self._classes)}
+        for probe_index, label in enumerate(self._few_shot_probe.classes_):
+            probabilities[:, class_to_index[str(label)]] = raw[:, probe_index]
+        return probabilities
+
     def _predict_head_v2(self, X: Any, batch_size: int = 64, include_desc: bool = True) -> np.ndarray:
         bundle = self._bundle
         model = self._model
@@ -899,6 +969,10 @@ class ASPIRE:
     ) -> np.ndarray:
         if not self.is_fitted_:
             raise RuntimeError("Call fit() before predict_proba()")
+        if self.fit_mode_ == "few_shot":
+            return self._predict_few_shot_probe(
+                X, batch_size=batch_size, include_desc=include_desc
+            )
         if self.fit_mode_ in ("v2", "v2_ft"):
             return self._predict_v2(X, batch_size=batch_size, include_desc=include_desc)
         if self.fit_mode_ == "v2_xgb":
@@ -914,7 +988,7 @@ class ASPIRE:
             return [self._classes[i] for i in pred_idx]
 
         # regression
-        if self.fit_mode_ == "v2":
+        if self.fit_mode_ in ("v2", "few_shot"):
             return proba.squeeze(1).tolist()
 
         if self._reg_head == "mog":

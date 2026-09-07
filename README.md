@@ -43,9 +43,10 @@ model.fit(X_train, y_train, num_epochs=10, batch_size=4)
 preds = model.predict(X_test)
 ```
 
-## Gradient-free few-shot inference
+## Few-shot linear probing
 
-Use labeled rows as in-context support examples without updating the checkpoint:
+Select labeled rows and fit a linear probe on frozen ASPIRE embeddings without
+updating the checkpoint:
 
 ```python
 from aspire_finetune import ASPIRE
