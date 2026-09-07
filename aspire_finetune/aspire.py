@@ -95,6 +95,7 @@ def _cache_h_vectors(
     batch_size: int,
     use_amp: bool,
     amp_dtype,
+    target_choices: Optional[Sequence[str]] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     model.eval()
     all_embs, all_labels = [], []
@@ -102,7 +103,8 @@ def _cache_h_vectors(
         br = rows[i: i + batch_size]
         batch = prepare_batch(bundle, br, target_col,
                               support_rows=support_rows, mask_prob=0.0,
-                              include_desc=include_desc)
+                              include_desc=include_desc,
+                              target_choices=target_choices)
         with autocast(device_type=device.type, enabled=use_amp, dtype=amp_dtype):
             _, enc = model(
                 batch["x_txt"], batch["x_num"], batch["d_output"],
@@ -137,7 +139,7 @@ class ASPIRE:
     ):
         self.checkpoint = checkpoint
         self.device = device if torch.cuda.is_available() else "cpu"
-        self.feature_specs_ = list(feature_specs) if feature_specs else []
+        self.feature_specs_ = [dict(spec) for spec in feature_specs] if feature_specs else []
         self.dataset_context = dataset_context
         self.target_column_ = target_column
         self.interaction_layers = interaction_layers
@@ -154,6 +156,7 @@ class ASPIRE:
         self._support_rows: List = []
         self._v2_head: Optional[LinearHead] = None
         self._xgb_clf = None
+        self.support_size_: int = 0
 
     @classmethod
     def from_pretrained(
@@ -198,6 +201,14 @@ class ASPIRE:
         # accept old mode names as aliases
         _mode_aliases = {"linear_probe": "v2", "head_finetune": "head_v2"}
         finetune_mode = _mode_aliases.get(finetune_mode, finetune_mode)
+        if finetune_mode in ("few_shot", "icl"):
+            return self.fit_few_shot(
+                X=X,
+                y=y,
+                max_support=num_support or None,
+                random_state=random_state,
+            )
+
 
         # val_fraction is an alias for test_fraction
         if val_fraction is not None:
@@ -286,10 +297,138 @@ class ASPIRE:
             )
             self._v2_head = None
         else:
-            raise ValueError(f"Unknown finetune_mode: '{finetune_mode}'. Use 'v2', 'v2_ft', 'v2_xgb', or 'head_v2'.")
+            raise ValueError(
+                f"Unknown finetune_mode: '{finetune_mode}'. Use 'few_shot', "
+                "'v2', 'v2_ft', 'v2_xgb', or 'head_v2'."
+            )
 
         self.fit_mode_ = finetune_mode
         self.is_fitted_ = True
+        return self
+
+    def fit_few_shot(
+        self,
+        X: Any,
+        y: Sequence[Any],
+        shots_per_class: Optional[int] = None,
+        max_support: Optional[int] = None,
+        random_state: int = 42,
+        task_type: Optional[str] = None,
+    ) -> "ASPIRE":
+
+        if shots_per_class is not None and max_support is not None:
+            raise ValueError("Use either shots_per_class or max_support, not both")
+        if shots_per_class is not None and shots_per_class <= 0:
+            raise ValueError("shots_per_class must be a positive integer")
+        if max_support is not None and max_support <= 0:
+            raise ValueError("max_support must be a positive integer")
+        if task_type not in (None, "classification", "regression"):
+            raise ValueError("task_type must be 'classification' or 'regression'")
+
+        X_df = X.copy() if isinstance(X, pd.DataFrame) else pd.DataFrame(X)
+        X_df = X_df.reset_index(drop=True)
+        y_series = pd.Series(y).reset_index(drop=True)
+        if len(X_df) != len(y_series):
+            raise ValueError(
+                f"X and y have different lengths: {len(X_df)} != {len(y_series)}"
+            )
+        if len(X_df) == 0:
+            raise ValueError("At least one labeled support example is required")
+        if y_series.isna().any():
+            raise ValueError("Few-shot support labels cannot contain missing values")
+
+        set_seeds(random_state)
+        if not self.feature_specs_:
+            tmp = pd.concat([X_df, y_series.rename(self.target_column_)], axis=1)
+            self.feature_specs_ = infer_feature_specs(tmp, self.target_column_)
+
+        if task_type is not None:
+            target_dtype = "categorical" if task_type == "classification" else "continuous"
+            target_spec = next(
+                (spec for spec in self.feature_specs_
+                 if spec["name"] == self.target_column_),
+                None,
+            )
+            if target_spec is None:
+                target_spec = {
+                    "name": self.target_column_,
+                    "description": self.target_column_.replace("_", " "),
+                }
+                self.feature_specs_.append(target_spec)
+            target_spec["dtype"] = target_dtype
+            if task_type == "classification":
+                target_spec["choices"] = sorted(y_series.astype(str).unique().tolist())
+
+        bundle = build_bundle_from_feature_specs(
+            X=X_df,
+            y=y_series,
+            feature_specs=self.feature_specs_,
+            dataset_context=self.dataset_context,
+            target_col=self.target_column_,
+        )
+        self._bundle = bundle
+        target_is_categorical = bundle.col_types.get(self.target_column_, "cat") == "cat"
+        rng = random.Random(random_state)
+
+        if target_is_categorical:
+            self._classes = sorted(
+                bundle.df[self.target_column_].dropna().astype(str).unique().tolist()
+            )
+            indices_by_class: Dict[str, List[int]] = {
+                label: [] for label in self._classes
+            }
+            for idx, label in enumerate(bundle.df[self.target_column_].astype(str)):
+                indices_by_class[label].append(idx)
+            for indices in indices_by_class.values():
+                rng.shuffle(indices)
+
+            if shots_per_class is not None:
+                selected = [
+                    idx
+                    for label in self._classes
+                    for idx in indices_by_class[label][:shots_per_class]
+                ]
+            elif max_support is not None:
+                selected = []
+                depth = 0
+                while len(selected) < max_support:
+                    at_depth = [
+                        indices_by_class[label][depth]
+                        for label in self._classes
+                        if depth < len(indices_by_class[label])
+                    ]
+                    if not at_depth:
+                        break
+                    selected.extend(at_depth[:max_support - len(selected)])
+                    depth += 1
+            else:
+                selected = list(range(len(bundle.df)))
+        else:
+            if shots_per_class is not None:
+                raise ValueError("shots_per_class is only valid for classification")
+            self._classes = []
+            selected = list(range(len(bundle.df)))
+            rng.shuffle(selected)
+            if max_support is not None:
+                selected = selected[:max_support]
+
+        self._support_rows = [bundle.df.iloc[idx] for idx in selected]
+        self._train_rows = []
+        self.support_size_ = len(self._support_rows)
+        self._model, self._reg_head = _load_checkpoint(
+            self.checkpoint,
+            self.device,
+            interaction_layers=self.interaction_layers,
+            n_mog=self.n_mog,
+        )
+        for parameter in self._model.parameters():
+            parameter.requires_grad = False
+        self._model.eval()
+        self._v2_head = None
+        self._xgb_clf = None
+        self.fit_mode_ = "few_shot"
+        self.is_fitted_ = True
+        logger.info("Configured few-shot inference with %d support rows", self.support_size_)
         return self
 
     def _fit_v2(
@@ -628,8 +767,13 @@ class ASPIRE:
         X: Any,
         batch_size: int = 64,
         include_desc: bool = True,
+        use_support: bool = True,
     ) -> np.ndarray:
-        """Return backbone [N, D_MODEL] embeddings for X (requires fit() first)."""
+        """Return frozen backbone embeddings for X.
+
+        Set ``use_support=False`` when fitting a probe on the support rows to
+        prevent each row from receiving its own label through ICL context.
+        """
         if not self.is_fitted_:
             raise RuntimeError("Call fit() before get_embeddings()")
         device_obj = torch.device(self.device)
@@ -645,11 +789,15 @@ class ASPIRE:
             dataset_context=self.dataset_context,
             target_col=self.target_column_,
         )
+        test_bundle.num_scalers = dict(self._bundle.num_scalers)
+        test_bundle.reg_bin_edges = dict(self._bundle.reg_bin_edges)
+        test_bundle.col_types[self.target_column_] = self._bundle.col_types[self.target_column_]
         test_rows = [test_bundle.df.iloc[i] for i in range(len(test_bundle.df))]
         embs, _ = _cache_h_vectors(
             self._model, test_bundle, test_rows, self.target_column_,
-            self._support_rows or None, include_desc,
+            (self._support_rows or None) if use_support else None, include_desc,
             device_obj, batch_size, use_amp, amp_dtype,
+            target_choices=self._classes or None,
         )
         return embs
 
@@ -714,6 +862,9 @@ class ASPIRE:
             dataset_context=self.dataset_context,
             target_col=self.target_column_,
         )
+        test_bundle.num_scalers = dict(bundle.num_scalers)
+        test_bundle.reg_bin_edges = dict(bundle.reg_bin_edges)
+        test_bundle.col_types[self.target_column_] = bundle.col_types[self.target_column_]
         test_rows = [test_bundle.df.iloc[i] for i in range(len(test_bundle.df))]
 
         target_type = bundle.col_types.get(self.target_column_, "cat")
@@ -724,7 +875,8 @@ class ASPIRE:
                 br = test_rows[i: i + batch_size]
                 batch = prepare_batch(test_bundle, br, self.target_column_,
                                       support_rows=self._support_rows or None,
-                                      mask_prob=0.0, include_desc=include_desc)
+                                      mask_prob=0.0, include_desc=include_desc,
+                                      target_choices=self._classes or None)
                 with autocast(device_type=device_obj.type, enabled=use_amp, dtype=amp_dtype):
                     preds = model(
                         batch["x_txt"], batch["x_num"], batch["d_output"],

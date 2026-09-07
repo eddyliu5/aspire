@@ -2,7 +2,7 @@ import math
 import os
 import random
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -489,10 +489,16 @@ def prepare_batch(bundle: DatasetBundle, rows: List[pd.Series], target_col: str,
                   mask_prob: float = 0.0,
                   include_desc: bool = False,
                   use_feat_descs: bool = False,
-                  anon_cols: bool = False) -> Dict:
+                  anon_cols: bool = False,
+                  target_choices: Optional[Sequence[str]] = None) -> Dict:
     ttype = bundle.col_types[target_col]
     if ttype == "cat":
-        target_choices = sorted(bundle.df[target_col].dropna().astype(str).unique().tolist())
+        if target_choices is None:
+            target_choices = sorted(
+                bundle.df[target_col].dropna().astype(str).unique().tolist()
+            )
+        else:
+            target_choices = [str(choice) for choice in target_choices]
     else:
         target_choices = None
 

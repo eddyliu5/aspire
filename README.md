@@ -42,3 +42,30 @@ model = AspireModel.from_pretrained(
 model.fit(X_train, y_train, num_epochs=10, batch_size=4)
 preds = model.predict(X_test)
 ```
+
+## Gradient-free few-shot inference
+
+Use labeled rows as in-context support examples without updating the checkpoint:
+
+```python
+from aspire_finetune import ASPIRE
+
+model = ASPIRE.from_pretrained(
+    checkpoint="checkpoints/best_model.pt",
+    feature_specs=feature_specs,
+    dataset_context=dataset_context,
+    target_column="fatigue_risk",
+)
+model.fit_few_shot(
+    X_train,
+    y_train,
+    shots_per_class=5,
+    random_state=42,
+    task_type="classification",
+)
+predictions = model.predict(X_test)
+probabilities = model.predict_proba(X_test)
+```
+
+Use `max_support=20` for a total support budget. The equivalent generic call is
+`model.fit(X_train, y_train, finetune_mode="few_shot", num_support=20)`.

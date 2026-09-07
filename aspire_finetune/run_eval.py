@@ -176,14 +176,14 @@ def main():
     ap.add_argument("--batch_size",  type=int,   default=32)
     ap.add_argument("--learning_rate", type=float, default=1e-3)
     ap.add_argument("--num_support", type=int,   default=0,
-                    help="ICL support examples during eval (0 = zero-shot)")
+                    help="Support-row limit in few_shot mode (0 = use all training rows)")
     ap.add_argument("--include_desc", action="store_true",
                     help="Pass dataset description as conditioning signal")
     ap.add_argument("--unfreeze_top_layers", type=int, default=0)
     ap.add_argument("--seeds", type=int, nargs="+", default=[42, 43, 44])
     ap.add_argument("--modes", type=str, nargs="+",
                     default=["v2", "head_v2"],
-                    choices=["v2", "v2_ft", "v2_xgb", "head_v2"])
+                    choices=["few_shot", "v2", "v2_ft", "v2_xgb", "head_v2"])
     ap.add_argument("--device",      type=str, default="cuda")
     ap.add_argument("--output_json", type=str, default="",
                     help="Optional path to save results JSON")
